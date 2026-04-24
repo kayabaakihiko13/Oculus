@@ -1,0 +1,13 @@
+[project]
+name = "oculus"
+version = "0.1.0"
+description = "Oculus for inference detection model with ONNX Runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.9",
+    "onnxruntime>=1.25.0",
+    "opencv-python>=4.13.0.92",
+    "psutil>=7.2.2",
+    "pyyaml>=6.0.3",
+]
