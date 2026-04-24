@@ -1,5 +1,6 @@
 # OCULUS - Object Detection Library
 
+![Oculus Logo](.github/docs/image/Oculus%20Logo.jpeg)
 
 **Oculus** adalah library Python untuk melakukan **deteksi objek** menggunakan model berbasis **ONNX** dan **ONNX Runtime**.
 Tujuan utama dari pengembangan Oculus adalah menyediakan solusi **ringan**, **cepat**, dan **portable** yang dapat berjalan secara optimal bahkan pada **perangkat CPU-only**, tanpa ketergantungan langsung pada framework deep learning seperti PyTorch atau TensorFlow.
@@ -42,5 +43,5 @@ Jika ingin menambahkan fitur baru, memperbaiki bug, atau meningkatkan dokumentas
 
 🔮 Next Features (Roadmap)
 
-- [ ] library ini kompitebel dengan linux
-- [ ] libray ini kompitabel dengan google colab
+- [x] library ini kompitebel dengan linux
+- [x] libray ini kompitabel dengan google colab
