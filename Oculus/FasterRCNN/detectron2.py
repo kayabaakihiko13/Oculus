@@ -1,11 +1,11 @@
 import json
 import os
+import time
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 import psutil
-
 
 class Detectron2Detector:
     def __init__(
@@ -15,46 +15,45 @@ class Detectron2Detector:
         conf_thresh: float = 0.5,
         optimization: bool = True,
     ):
-        """ """
         self.classes = None
         self.conf_thresh = conf_thresh
         self.opts = ort.SessionOptions()
-        # check file json with coco label
-        if os.path.exists(coco_json_path):
-            with open(coco_json_path,'r',encoding="utf-8") as f:
-                data= json.load(f)["categories"]
-                self.classes = [c["name"] for c in sorted(data, key=lambda x: x["id"])]
-        if optimization:
-            logical_cores = psutil.cpu_count(logical=True)
-            self.opts.intra_op_num_threads = max(1,logical_cores//2)
-            self.opts.inter_op_num_threads = 1
-            self.opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
-            # and input in inferencSession
         
-        # check model nya
+        # Load COCO labels
+        if os.path.exists(coco_json_path):
+            with open(coco_json_path, 'r', encoding="utf-8") as f:
+                data = json.load(f)["categories"]
+                self.classes = [c["name"] for c in sorted(data, key=lambda x: x["id"])]
+        
+        # Set optimization options
+        if optimization:
+            self.opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.opts.intra_op_num_threads = psutil.cpu_count(logical=False)
+            self.opts.inter_op_num_threads = 1
+            self.opts.enable_mem_pattern = True
+        # Load ONNX model
         if os.path.exists(onnx_model_path):
             self.session = ort.InferenceSession(
-                    onnx_model_path,
-                    sess_options=self.opts,
-                    providers=["CPUExecutionProvider"]
-                )
+                onnx_model_path,
+                sess_options=self.opts,
+                providers=["CPUExecutionProvider"]
+            )
         else:
             raise FileNotFoundError("File ONNX tidak ditemukan")
         
+        # Get input shape - FIX: input_weight -> input_width
         session_inputs = self.session.get_inputs()[0].shape
-        self.batch_size, self.channels, self.input_height, self.input_weight = session_inputs
-        
+        self.batch_size, self.channels, self.input_height, self.input_width = session_inputs
     
     def __letterbox(self, image: np.ndarray, new_shape=(640, 640),
                    color=(114, 114, 114)):
-        """Resize image dengan aspect ratio tetap + padding"""
         if image is None:
             raise ValueError("Image is None, check the file path")
         
-        shape = image.shape[:2]  # [h, w]
+        shape = image.shape[:2]
         if isinstance(new_shape, int):
             new_shape = (new_shape, new_shape)
-        new_shape = (int(new_shape[0]),int(new_shape[1]))
+        new_shape = (int(new_shape[0]), int(new_shape[1]))
         r = min(new_shape[0]/shape[0], new_shape[1]/shape[1])
         new_unpad = int(round(shape[1]*r)), int(round(shape[0]*r))
         dw, dh = new_shape[1]-new_unpad[0], new_shape[0]-new_unpad[1]
@@ -64,35 +63,33 @@ class Detectron2Detector:
         resized = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
         top, bottom = int(round(dh-0.1)), int(round(dh+0.1))
         left, right = int(round(dw-0.1)), int(round(dw+0.1))
-        padded = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+        padded = cv2.copyMakeBorder(resized, top, bottom, left, right, 
+                                   cv2.BORDER_CONSTANT, value=color)
         return padded, r, (dw, dh)
 
     def __preprocess(self, image: np.ndarray):
-        """Resize + convert HWC BGR -> NCHW float32"""
-        img, r, dwdh = self.__letterbox(image, (int(str(self.input_height)),
-                                                int(str(self.input_weight))))
+        # FIX: input_weight -> input_width
+        img, r, dwdh = self.__letterbox(image, (int(self.input_height), 
+                                                 int(self.input_width)))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32)
-        img = img.transpose(2, 0, 1)  # HWC -> CHW
-        img = np.expand_dims(img, axis=0)  # add batch
+        img = img.transpose(2, 0, 1)
+        img = np.expand_dims(img, axis=0)
         return img, r, dwdh
 
-    def __regional_proposal(self,image_arr:np.ndarray):
+    def __regional_proposal(self, image_arr: np.ndarray):
         blob, ratio, dwdh = self.__preprocess(image_arr)
         input_name = self.session.get_inputs()[0].name
         output_names = [o.name for o in self.session.get_outputs()]
 
-        # Jalankan model
         boxes, scores, class_ids = self.session.run(output_names, {input_name: blob})
-
         return boxes, scores, class_ids, ratio, dwdh
 
-    def __post_rpn(self,image_arr:np.ndarray,boxes,scores,class_ids,ratio,dwdh):
+    def __post_rpn(self, image_arr: np.ndarray, boxes, scores, class_ids, ratio, dwdh):
         mask = np.array(scores) >= self.conf_thresh
         boxes = np.array(boxes)[mask]
         scores = np.array(scores)[mask]
         class_ids = np.array(class_ids)[mask]
 
-        # Kembalikan ke ukuran asli
         boxes[:, [0, 2]] -= dwdh[0]
         boxes[:, [1, 3]] -= dwdh[1]
         boxes /= ratio
@@ -104,32 +101,33 @@ class Detectron2Detector:
 
         return boxes, scores.tolist(), class_ids.tolist()
 
-    def detect(self,file_path:str):
-        if os.path.exists(file_path):
-            if file_path.endswith((".jpg", ".jpeg", ".png")):
-                image = cv2.imread(file_path)
-                boxes, scores, class_ids, ratio, dwdh = self.__regional_proposal(image)
+    def detect(self, file_path: str):
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File tidak ditemukan: {file_path}")
+        
+        if file_path.endswith((".jpg", ".jpeg", ".png")):
+            image = cv2.imread(file_path)
+            if image is None:
+                raise ValueError(f"Gagal membaca image: {file_path}")
+            boxes, scores, class_ids, ratio, dwdh = self.__regional_proposal(image)
+            boxes, scores, class_ids = self.__post_rpn(
+                image, boxes, scores, class_ids, ratio, dwdh
+            )
+            return boxes, scores, class_ids
+
+        elif file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
+            cap = cv2.VideoCapture(file_path)
+            results = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                boxes, scores, class_ids, ratio, dwdh = self.__regional_proposal(frame)
                 boxes, scores, class_ids = self.__post_rpn(
-                    image, boxes, scores, class_ids, ratio, dwdh
+                    frame, boxes, scores, class_ids, ratio, dwdh
                 )
-                return boxes, scores, class_ids
-
-            if file_path.endswith((".mp4", ".avi", ".mov", ".mkv")):
-                cap = cv2.VideoCapture(file_path)
-                results = []
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    boxes, scores, class_ids, ratio, dwdh = self.__regional_proposal(
-                        frame
-                    )
-                    boxes, scores, class_ids = self.__post_rpn(
-                        frame, boxes, scores, class_ids, ratio, dwdh
-                    )
-                    results.append((boxes, scores, class_ids))
-                cap.release()
-                return results
+                results.append((boxes, scores, class_ids))
+            cap.release()
+            return results
         else:
-            raise FileNotFoundError("Format file tidak dikenali! Gunakan .jpg, .png, atau .mp4.")
-
+            raise ValueError(f"Format file tidak didukung: {file_path}")
